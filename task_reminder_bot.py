@@ -442,6 +442,7 @@ def main():
             TASK_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, task_time_received)],
         },
         fallbacks=[CommandHandler('cancel', cancel_command)],
+        allow_reentry=True
     )
     
     application.add_handler(conv_handler)
