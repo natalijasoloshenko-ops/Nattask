@@ -24,7 +24,7 @@ TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '7858168078:AAHMVmRHAzD8BiN
 
 # Conversation states
 TASK_NAME, TASK_DATE, TASK_TIME, TASK_REPEAT = range(4)
-DELETE_NUMBER = range(4, 5)
+DELETE_NUMBER, EDIT_TASK, EDIT_FIELD, EDIT_VALUE = range(4, 8)
 
 # File to store tasks
 TASKS_FILE = 'tasks.json'
@@ -49,7 +49,8 @@ def get_main_keyboard():
     keyboard = [
         [KeyboardButton("🏠 Старт")],
         [KeyboardButton("➕ Добавить задачу"), KeyboardButton("📋 Мои задачи")],
-        [KeyboardButton("🗑️ Удалить задачу"), KeyboardButton("ℹ️ Помощь")]
+        [KeyboardButton("✏️ Редактировать задачу"), KeyboardButton("🗑️ Удалить задачу")],
+        [KeyboardButton("ℹ️ Помощь")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -63,6 +64,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/addtask - Добавить новую задачу с датой и временем\n"
         "/listtasks - Посмотреть все ваши задачи\n"
         "/deletetask - Удалить задачу\n"
+        "/edittask - Редактировать задачу\n"
         "/help - Показать это сообщение\n\n"
         "Давайте начнем! 🎯",
         reply_markup=get_main_keyboard()
@@ -77,6 +79,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/addtask - Добавить новую задачу с напоминанием\n"
         "/listtasks - Посмотреть все задачи\n"
         "/deletetask - Удалить задачу\n"
+        "/edittask - Редактировать задачу\n"
         "/help - Показать это сообщение\n\n"
         "При добавлении задачи:\n"
         "1. Введите описание задачи\n"
@@ -380,6 +383,33 @@ async def delete_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     return DELETE_NUMBER
 
 
+async def edit_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Edit a task by number"""
+    user_id = str(update.effective_user.id)
+    tasks = load_tasks()
+    
+    if user_id not in tasks or not tasks[user_id]:
+        await update.message.reply_text(
+            "📋 У вас нет задач для редактирования.\n\n"
+            "Используйте /addtask чтобы создать задачу!",
+            reply_markup=get_main_keyboard()
+        )
+        return ConversationHandler.END
+    
+    # Show tasks with numbers
+    user_tasks = tasks[user_id]
+    user_tasks.sort(key=lambda x: x['datetime'])
+    
+    message = "✏️ Выберите задачу для редактирования:\n\n"
+    for idx, task in enumerate(user_tasks, 1):
+        message += f"{idx}. {task['name']} - {task['date']} {task['time']}\n"
+    
+    message += "\nОтветьте номером задачи для редактирования.\nОтправьте /cancel для отмены."
+    
+    await update.message.reply_text(message, reply_markup=ReplyKeyboardRemove())
+    return EDIT_TASK
+
+
 async def handle_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle menu button presses"""
     text = update.message.text
@@ -391,6 +421,9 @@ async def handle_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
         pass
     elif text == "📋 Мои задачи":
         return await list_tasks_command(update, context)
+    elif text == "✏️ Редактировать задачу":
+        # Это обработается ConversationHandler
+        pass
     elif text == "🗑️ Удалить задачу":
         # Это обработается ConversationHandler
         pass
@@ -442,6 +475,238 @@ async def handle_delete_number(update: Update, context: ContextTypes.DEFAULT_TYP
             "❌ Пожалуйста, введите корректный номер задачи."
         )
         return DELETE_NUMBER
+
+
+async def handle_edit_task_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle task selection for editing"""
+    try:
+        task_num = int(update.message.text)
+        user_id = str(update.effective_user.id)
+        tasks = load_tasks()
+        
+        if user_id not in tasks or not tasks[user_id]:
+            await update.message.reply_text("Задачи не найдены.", reply_markup=get_main_keyboard())
+            return ConversationHandler.END
+        
+        user_tasks = tasks[user_id]
+        user_tasks.sort(key=lambda x: x['datetime'])
+        
+        if task_num < 1 or task_num > len(user_tasks):
+            await update.message.reply_text(
+                f"❌ Неверный номер задачи. Выберите от 1 до {len(user_tasks)}"
+            )
+            return EDIT_TASK
+        
+        # Store task info for editing
+        context.user_data['edit_task_index'] = task_num - 1
+        context.user_data['edit_task'] = user_tasks[task_num - 1].copy()
+        
+        # Show edit options
+        task = user_tasks[task_num - 1]
+        keyboard = [
+            [KeyboardButton("📝 Название"), KeyboardButton("📅 Дата")],
+            [KeyboardButton("🕐 Время"), KeyboardButton("🔁 Повтор")],
+            [KeyboardButton("✅ Сохранить"), KeyboardButton("❌ Отмена")]
+        ]
+        
+        message = (
+            f"✏️ Редактирование задачи:\n\n"
+            f"📝 {task['name']}\n"
+            f"📅 {task['date']} в {task['time']}\n\n"
+            "Что хотите изменить?"
+        )
+        
+        await update.message.reply_text(
+            message,
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+        return EDIT_FIELD
+        
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Пожалуйста, введите корректный номер задачи."
+        )
+        return EDIT_TASK
+
+
+async def handle_edit_field_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle field selection for editing"""
+    text = update.message.text
+    
+    if text == "📝 Название":
+        await update.message.reply_text(
+            "Введите новое название задачи:\n\n"
+            "Отправьте /cancel для отмены.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        context.user_data['edit_field'] = 'name'
+        return EDIT_VALUE
+    
+    elif text == "📅 Дата":
+        await update.message.reply_text(
+            "Введите новую дату (ДД.ММ.ГГГГ или ДД/ММ/ГГГГ):\n\n"
+            "Примеры: 25.11.2025 или 25/11/2025\n\n"
+            "Отправьте /cancel для отмены.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        context.user_data['edit_field'] = 'date'
+        return EDIT_VALUE
+    
+    elif text == "🕐 Время":
+        await update.message.reply_text(
+            "Введите новое время (ЧЧ:ММ):\n\n"
+            "Примеры: 14:30, 09:00, 18:45\n\n"
+            "Отправьте /cancel для отмены.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        context.user_data['edit_field'] = 'time'
+        return EDIT_VALUE
+    
+    elif text == "🔁 Повтор":
+        keyboard = [
+            [KeyboardButton("❌ Не повторять")],
+            [KeyboardButton("📅 Каждый день"), KeyboardButton("📆 Каждую неделю")],
+            [KeyboardButton("🗓 Каждый месяц"), KeyboardButton("🎇 Каждый год")]
+        ]
+        
+        await update.message.reply_text(
+            "Выберите новую регулярность повторения:\n\n"
+            "Отправьте /cancel для отмены.",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+        context.user_data['edit_field'] = 'repeat'
+        return EDIT_VALUE
+    
+    elif text == "✅ Сохранить":
+        # Save the edited task
+        user_id = str(update.effective_user.id)
+        tasks = load_tasks()
+        
+        if user_id in tasks and 'edit_task_index' in context.user_data:
+            task_index = context.user_data['edit_task_index']
+            edited_task = context.user_data['edit_task']
+            
+            # Update datetime
+            try:
+                task_datetime = datetime.strptime(
+                    f"{edited_task['date']} {edited_task['time']}", 
+                    '%d.%m.%Y %H:%M'
+                )
+                edited_task['datetime'] = task_datetime.isoformat()
+            except ValueError:
+                pass  # Keep original datetime if parsing fails
+            
+            tasks[user_id][task_index] = edited_task
+            save_tasks(tasks)
+            
+            await update.message.reply_text(
+                f"✅ Задача успешно обновлена!\n\n"
+                f"📝 {edited_task['name']}\n"
+                f"📅 {edited_task['date']} в {edited_task['time']}",
+                reply_markup=get_main_keyboard()
+            )
+        else:
+            await update.message.reply_text(
+                "❌ Ошибка при сохранении задачи.",
+                reply_markup=get_main_keyboard()
+            )
+        
+        context.user_data.clear()
+        return ConversationHandler.END
+    
+    elif text == "❌ Отмена":
+        await update.message.reply_text(
+            "❌ Редактирование отменено.",
+            reply_markup=get_main_keyboard()
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+    
+    else:
+        await update.message.reply_text(
+            "❌ Пожалуйста, выберите поле для редактирования."
+        )
+        return EDIT_FIELD
+
+
+async def handle_edit_value_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle value input for editing"""
+    user_id = str(update.effective_user.id)
+    field = context.user_data.get('edit_field', '')
+    value = update.message.text
+    
+    if field == 'name':
+        context.user_data['edit_task']['name'] = value
+        
+    elif field == 'date':
+        # Validate date
+        try:
+            date_text = value.replace('/', '.')
+            task_date = datetime.strptime(date_text, '%d.%m.%Y')
+            
+            # Check if date is in the past
+            if task_date.date() < datetime.now().date():
+                await update.message.reply_text(
+                    "⚠️ Эта дата уже прошла!\n\n"
+                    "Пожалуйста, введите будущую дату (ДД.ММ.ГГГГ):"
+                )
+                return EDIT_VALUE
+            
+            context.user_data['edit_task']['date'] = task_date.strftime('%d.%m.%Y')
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Неверный формат даты!\n\n"
+                "Используйте формат ДД.ММ.ГГГГ или ДД/ММ/ГГГГ\n"
+                "Пример: 25.11.2025 или 25/11/2025"
+            )
+            return EDIT_VALUE
+    
+    elif field == 'time':
+        # Validate time
+        try:
+            task_time = datetime.strptime(value, '%H:%M')
+            context.user_data['edit_task']['time'] = task_time.strftime('%H:%M')
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Неверный формат времени!\n\n"
+                "Используйте формат ЧЧ:ММ (24-часовой)\n"
+                "Примеры: 14:30, 09:00, 18:45"
+            )
+            return EDIT_VALUE
+    
+    elif field == 'repeat':
+        # Map repeat text to repeat type
+        repeat_map = {
+            "❌ Не повторять": "none",
+            "📅 Каждый день": "daily",
+            "📆 Каждую неделю": "weekly",
+            "🗓 Каждый месяц": "monthly",
+            "🎇 Каждый год": "yearly"
+        }
+        
+        repeat_type = repeat_map.get(value, "none")
+        context.user_data['edit_task']['repeat'] = repeat_type
+    
+    # Show edit options again
+    task = context.user_data['edit_task']
+    keyboard = [
+        [KeyboardButton("📝 Название"), KeyboardButton("📅 Дата")],
+        [KeyboardButton("🕐 Время"), KeyboardButton("🔁 Повтор")],
+        [KeyboardButton("✅ Сохранить"), KeyboardButton("❌ Отмена")]
+    ]
+    
+    message = (
+        f"✏️ Редактирование задачи:\n\n"
+        f"📝 {task['name']}\n"
+        f"📅 {task['date']} в {task['time']}\n\n"
+        "Что хотите изменить?"
+    )
+    
+    await update.message.reply_text(
+        message,
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    )
+    return EDIT_FIELD
 
 
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
@@ -598,9 +863,25 @@ def main():
         allow_reentry=True
     )
     
+    # Add conversation handler for editing tasks
+    edit_handler = ConversationHandler(
+        entry_points=[
+            CommandHandler('edittask', edit_task_command),
+            MessageHandler(filters.Regex('^✏️ Редактировать задачу$'), edit_task_command)
+        ],
+        states={
+            EDIT_TASK: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_task_selection)],
+            EDIT_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_field_selection)],
+            EDIT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_value_input)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_command)],
+        allow_reentry=True
+    )
+    
     # Register handlers (order matters - ConversationHandlers first!)
     application.add_handler(conv_handler)
     application.add_handler(delete_handler)
+    application.add_handler(edit_handler)
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("listtasks", list_tasks_command))
