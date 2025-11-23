@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '7858168078:AAHMVmRHAzD8BiNCrHBHb7qFo457Mh8AH94')
 
 # Conversation states
-TASK_NAME, TASK_DATE, TASK_TIME = range(3)
+TASK_NAME, TASK_DATE, TASK_TIME, TASK_REPEAT = range(4)
 
 # File to store tasks
 TASKS_FILE = 'tasks.json'
@@ -80,11 +80,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "При добавлении задачи:\n"
         "1. Введите описание задачи\n"
         "2. Введите дату (ДД.ММ.ГГГГ или ДД/ММ/ГГГГ)\n"
-        "3. Введите время (ЧЧ:ММ)\n\n"
+        "3. Введите время (ЧЧ:ММ)\n"
+        "4. Выберите регулярность повторения\n\n"
+        "🔁 Повторяющиеся задачи:\n"
+        "📅 Каждый день - напоминать ежедневно\n"
+        "📆 Каждую неделю - напоминать еженедельно\n"
+        "🗓 Каждый месяц - напоминать ежемесячно\n"
+        "🎇 Каждый год - напоминать ежегодно\n\n"
         "Пример:\n"
         "Задача: Купить продукты\n"
         "Дата: 25.11.2025\n"
-        "Время: 14:30",
+        "Время: 14:30\n"
+        "Повтор: Каждую неделю",
         reply_markup=get_main_keyboard()
     )
 
@@ -153,7 +160,7 @@ async def task_date_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def task_time_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Receive task time and save the task"""
+    """Receive task time and ask for repeat"""
     time_text = update.message.text
     
     # Try to parse the time
@@ -174,46 +181,21 @@ async def task_time_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             return TASK_TIME
         
-        # Save the task
-        user_id = str(update.effective_user.id)
-        tasks = load_tasks()
-        
-        if user_id not in tasks:
-            tasks[user_id] = []
-        
-        task = {
-            'name': context.user_data['task_name'],
-            'date': date_str,
-            'time': time_str,
-            'datetime': task_datetime.isoformat(),
-            'created_at': datetime.now().isoformat()
-        }
-        
-        tasks[user_id].append(task)
-        save_tasks(tasks)
-        
-        # Schedule the reminder
-        job_queue = context.application.job_queue
-        job_queue.run_once(
-            send_reminder,
-            when=task_datetime,
-            data={'task': task, 'chat_id': update.effective_chat.id},
-            name=f"{user_id}_{len(tasks[user_id])-1}"
-        )
+        # Ask about repeat
+        keyboard = [
+            [KeyboardButton("❌ Не повторять")],
+            [KeyboardButton("📅 Каждый день"), KeyboardButton("📆 Каждую неделю")],
+            [KeyboardButton("🗓 Каждый месяц"), KeyboardButton("🎇 Каждый год")]
+        ]
         
         await update.message.reply_text(
-            f"✅ Задача успешно добавлена!\n\n"
-            f"📝 Задача: {task['name']}\n"
-            f"📅 Дата: {task['date']}\n"
-            f"🕐 Время: {task['time']}\n\n"
-            f"Я напомню вам в назначенное время! ⏰",
-            reply_markup=get_main_keyboard()
+            f"✅ Время: {time_str}\n\n"
+            "🔁 Повторять задачу?\n"
+            "Выберите регулярность:\n\n"
+            "Отправьте /cancel для отмены.",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         )
-        
-        # Clear user data
-        context.user_data.clear()
-        
-        return ConversationHandler.END
+        return TASK_REPEAT
         
     except ValueError:
         await update.message.reply_text(
@@ -222,6 +204,81 @@ async def task_time_received(update: Update, context: ContextTypes.DEFAULT_TYPE)
             "Примеры: 14:30, 09:00, 18:45"
         )
         return TASK_TIME
+
+
+async def task_repeat_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive repeat choice and save the task"""
+    repeat_text = update.message.text
+    
+    # Determine repeat interval
+    repeat_type = 'none'
+    if repeat_text == "📅 Каждый день":
+        repeat_type = 'daily'
+    elif repeat_text == "📆 Каждую неделю":
+        repeat_type = 'weekly'
+    elif repeat_text == "🗓 Каждый месяц":
+        repeat_type = 'monthly'
+    elif repeat_text == "🎇 Каждый год":
+        repeat_type = 'yearly'
+    
+    # Combine date and time
+    date_str = context.user_data['task_date']
+    time_str = context.user_data['task_time']
+    task_datetime = datetime.strptime(f"{date_str} {time_str}", '%d.%m.%Y %H:%M')
+    
+    # Save the task
+    user_id = str(update.effective_user.id)
+    tasks = load_tasks()
+    
+    if user_id not in tasks:
+        tasks[user_id] = []
+    
+    task = {
+        'name': context.user_data['task_name'],
+        'date': date_str,
+        'time': time_str,
+        'datetime': task_datetime.isoformat(),
+        'repeat': repeat_type,
+        'created_at': datetime.now().isoformat()
+    }
+    
+    tasks[user_id].append(task)
+    save_tasks(tasks)
+    
+    # Schedule the reminder
+    job_queue = context.application.job_queue
+    job_queue.run_once(
+        send_reminder,
+        when=task_datetime,
+        data={'task': task, 'chat_id': update.effective_chat.id, 'user_id': user_id},
+        name=f"{user_id}_{len(tasks[user_id])-1}"
+    )
+    
+    # Prepare repeat info
+    repeat_info = ""
+    if repeat_type == 'daily':
+        repeat_info = "🔁 Повтор: каждый день"
+    elif repeat_type == 'weekly':
+        repeat_info = "🔁 Повтор: каждую неделю"
+    elif repeat_type == 'monthly':
+        repeat_info = "🔁 Повтор: каждый месяц"
+    elif repeat_type == 'yearly':
+        repeat_info = "🔁 Повтор: каждый год"
+    
+    await update.message.reply_text(
+        f"✅ Задача успешно добавлена!\n\n"
+        f"📝 Задача: {task['name']}\n"
+        f"📅 Дата: {task['date']}\n"
+        f"🕐 Время: {task['time']}\n"
+        f"{repeat_info}\n\n"
+        f"Я напомню вам в назначенное время! ⏰",
+        reply_markup=get_main_keyboard()
+    )
+    
+    # Clear user data
+    context.user_data.clear()
+    
+    return ConversationHandler.END
 
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -272,8 +329,20 @@ async def list_tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             else:
                 status = "⏳ скоро"
         
+        # Add repeat info
+        repeat_type = task.get('repeat', 'none')
+        repeat_badge = ""
+        if repeat_type == 'daily':
+            repeat_badge = " 🔁📅"
+        elif repeat_type == 'weekly':
+            repeat_badge = " 🔁📆"
+        elif repeat_type == 'monthly':
+            repeat_badge = " 🔁🗓"
+        elif repeat_type == 'yearly':
+            repeat_badge = " 🔁🎇"
+        
         message += (
-            f"{idx}. {task['name']}\n"
+            f"{idx}. {task['name']}{repeat_badge}\n"
             f"   📅 {task['date']} в {task['time']}\n"
             f"   {status}\n\n"
         )
@@ -395,6 +464,7 @@ async def check_tasks_periodically(context: ContextTypes.DEFAULT_TYPE):
     """Проверка задач каждую минуту"""
     tasks = load_tasks()
     current_time = datetime.now()
+    tasks_updated = False
     
     for user_id, user_tasks in tasks.items():
         for idx, task in enumerate(user_tasks):
@@ -409,10 +479,22 @@ async def check_tasks_periodically(context: ContextTypes.DEFAULT_TYPE):
                 
                 # Проверяем, не отправляли ли уже напоминание
                 if not task.get('reminded', False):
+                    repeat_type = task.get('repeat', 'none')
+                    repeat_info = ""
+                    if repeat_type == 'daily':
+                        repeat_info = "\n🔁 Повторяется каждый день"
+                    elif repeat_type == 'weekly':
+                        repeat_info = "\n🔁 Повторяется каждую неделю"
+                    elif repeat_type == 'monthly':
+                        repeat_info = "\n🔁 Повторяется каждый месяц"
+                    elif repeat_type == 'yearly':
+                        repeat_info = "\n🔁 Повторяется каждый год"
+                    
                     message = (
                         "⏰ Напоминание о задаче!\n\n"
                         f"📝 {task['name']}\n"
-                        f"📅 {task['date']} в {task['time']}\n\n"
+                        f"📅 {task['date']} в {task['time']}"
+                        f"{repeat_info}\n\n"
                         "Не забудьте выполнить! ✅"
                     )
                     
@@ -421,11 +503,65 @@ async def check_tasks_periodically(context: ContextTypes.DEFAULT_TYPE):
                         
                         # Отмечаем, что напоминание отправлено
                         task['reminded'] = True
-                        save_tasks(tasks)
+                        
+                        # Если задача повторяющаяся, создаем следующую
+                        if repeat_type != 'none':
+                            next_datetime = calculate_next_datetime(task_datetime, repeat_type)
+                            
+                            # Создаем новую задачу на следующий период
+                            new_task = {
+                                'name': task['name'],
+                                'date': next_datetime.strftime('%d.%m.%Y'),
+                                'time': next_datetime.strftime('%H:%M'),
+                                'datetime': next_datetime.isoformat(),
+                                'repeat': repeat_type,
+                                'created_at': task['created_at']
+                            }
+                            user_tasks.append(new_task)
+                            tasks_updated = True
+                            
+                            logger.info(f"Создана повторяющаяся задача для {user_id}: {task['name']} на {new_task['date']} {new_task['time']}")
                         
                         logger.info(f"Отправлено напоминание пользователю {user_id}: {task['name']}")
                     except Exception as e:
                         logger.error(f"Ошибка при отправке напоминания: {e}")
+    
+    # Сохраняем изменения, если были добавлены повторяющиеся задачи
+    if tasks_updated:
+        save_tasks(tasks)
+
+
+def calculate_next_datetime(current_dt, repeat_type):
+    """Calculate next datetime for repeating task"""
+    if repeat_type == 'daily':
+        return current_dt + timedelta(days=1)
+    elif repeat_type == 'weekly':
+        return current_dt + timedelta(weeks=1)
+    elif repeat_type == 'monthly':
+        # Add one month (handle month overflow)
+        next_month = current_dt.month + 1
+        next_year = current_dt.year
+        if next_month > 12:
+            next_month = 1
+            next_year += 1
+        
+        # Handle day overflow (e.g., Jan 31 -> Feb 28/29)
+        try:
+            return current_dt.replace(year=next_year, month=next_month)
+        except ValueError:
+            # Day doesn't exist in next month, use last day of month
+            import calendar
+            last_day = calendar.monthrange(next_year, next_month)[1]
+            return current_dt.replace(year=next_year, month=next_month, day=last_day)
+    elif repeat_type == 'yearly':
+        next_year = current_dt.year + 1
+        try:
+            return current_dt.replace(year=next_year)
+        except ValueError:
+            # Handle Feb 29 on non-leap years
+            return current_dt.replace(year=next_year, day=28)
+    
+    return current_dt
 
 
 def main():
@@ -440,6 +576,7 @@ def main():
             TASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, task_name_received)],
             TASK_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, task_date_received)],
             TASK_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, task_time_received)],
+            TASK_REPEAT: [MessageHandler(filters.TEXT & ~filters.COMMAND, task_repeat_received)],
         },
         fallbacks=[CommandHandler('cancel', cancel_command)],
         allow_reentry=True
