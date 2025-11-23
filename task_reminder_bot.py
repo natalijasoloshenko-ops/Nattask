@@ -24,6 +24,7 @@ TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN', '7858168078:AAHMVmRHAzD8BiN
 
 # Conversation states
 TASK_NAME, TASK_DATE, TASK_TIME, TASK_REPEAT = range(4)
+DELETE_NUMBER = range(4, 5)
 
 # File to store tasks
 TASKS_FILE = 'tasks.json'
@@ -360,9 +361,10 @@ async def delete_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     if user_id not in tasks or not tasks[user_id]:
         await update.message.reply_text(
             "📋 У вас нет задач для удаления.\n\n"
-            "Используйте /addtask чтобы создать задачу!"
+            "Используйте /addtask чтобы создать задачу!",
+            reply_markup=get_main_keyboard()
         )
-        return
+        return ConversationHandler.END
     
     # Show tasks with numbers
     user_tasks = tasks[user_id]
@@ -372,12 +374,10 @@ async def delete_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     for idx, task in enumerate(user_tasks, 1):
         message += f"{idx}. {task['name']} - {task['date']} {task['time']}\n"
     
-    message += "\nОтветьте номером задачи для удаления."
+    message += "\nОтветьте номером задачи для удаления.\nОтправьте /cancel для отмены."
     
-    await update.message.reply_text(message)
-    
-    # Store context for deletion
-    context.user_data['awaiting_delete'] = True
+    await update.message.reply_text(message, reply_markup=ReplyKeyboardRemove())
+    return DELETE_NUMBER
 
 
 async def handle_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -404,17 +404,14 @@ async def handle_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_delete_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle deletion by task number"""
-    if not context.user_data.get('awaiting_delete'):
-        return await handle_menu_buttons(update, context)
-    
     try:
         task_num = int(update.message.text)
         user_id = str(update.effective_user.id)
         tasks = load_tasks()
         
         if user_id not in tasks or not tasks[user_id]:
-            await update.message.reply_text("Задачи не найдены.")
-            return
+            await update.message.reply_text("Задачи не найдены.", reply_markup=get_main_keyboard())
+            return ConversationHandler.END
         
         user_tasks = tasks[user_id]
         user_tasks.sort(key=lambda x: x['datetime'])
@@ -423,7 +420,7 @@ async def handle_delete_number(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_text(
                 f"❌ Неверный номер задачи. Выберите от 1 до {len(user_tasks)}"
             )
-            return
+            return DELETE_NUMBER
         
         deleted_task = user_tasks.pop(task_num - 1)
         tasks[user_id] = user_tasks
@@ -436,12 +433,13 @@ async def handle_delete_number(update: Update, context: ContextTypes.DEFAULT_TYP
             reply_markup=get_main_keyboard()
         )
         
-        context.user_data.clear()
+        return ConversationHandler.END
         
     except ValueError:
         await update.message.reply_text(
             "❌ Пожалуйста, введите корректный номер задачи."
         )
+        return DELETE_NUMBER
 
 
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
@@ -582,12 +580,23 @@ def main():
         allow_reentry=True
     )
     
+    # Add conversation handler for deleting tasks
+    delete_handler = ConversationHandler(
+        entry_points=[CommandHandler('deletetask', delete_task_command)],
+        states={
+            DELETE_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_number)],
+        },
+        fallbacks=[CommandHandler('cancel', cancel_command)],
+        allow_reentry=True
+    )
+    
+    # Register handlers (order matters - ConversationHandlers first!)
     application.add_handler(conv_handler)
+    application.add_handler(delete_handler)
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("listtasks", list_tasks_command))
-    application.add_handler(CommandHandler("deletetask", delete_task_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_number))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_menu_buttons))
     
     # Load existing tasks and schedule reminders
     tasks = load_tasks()
