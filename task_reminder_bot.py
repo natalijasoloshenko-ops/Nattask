@@ -387,11 +387,13 @@ async def handle_menu_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE
     if text == "🏠 Старт":
         return await start_command(update, context)
     elif text == "➕ Добавить задачу":
-        return await add_task_start(update, context)
+        # Это обработается ConversationHandler
+        pass
     elif text == "📋 Мои задачи":
         return await list_tasks_command(update, context)
     elif text == "🗑️ Удалить задачу":
-        return await delete_task_command(update, context)
+        # Это обработается ConversationHandler
+        pass
     elif text == "ℹ️ Помощь":
         return await help_command(update, context)
     else:
@@ -569,7 +571,10 @@ def main():
     
     # Add conversation handler for adding tasks
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('addtask', add_task_start)],
+        entry_points=[
+            CommandHandler('addtask', add_task_start),
+            MessageHandler(filters.Regex('^➕ Добавить задачу$'), add_task_start)
+        ],
         states={
             TASK_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, task_name_received)],
             TASK_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, task_date_received)],
@@ -582,7 +587,10 @@ def main():
     
     # Add conversation handler for deleting tasks
     delete_handler = ConversationHandler(
-        entry_points=[CommandHandler('deletetask', delete_task_command)],
+        entry_points=[
+            CommandHandler('deletetask', delete_task_command),
+            MessageHandler(filters.Regex('^🗑️ Удалить задачу$'), delete_task_command)
+        ],
         states={
             DELETE_NUMBER: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_delete_number)],
         },
